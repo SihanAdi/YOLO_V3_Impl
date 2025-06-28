@@ -6,9 +6,8 @@ from torch.utils.data import Dataset
 from PIL import Image, ImageFile
 from skimage.transform import resize
 import torch
-import random
 import os
-import warnings
+import glob
 import numpy as np
 
 # 允许加载截断的图片
@@ -94,3 +93,30 @@ class CocoDatasets(Dataset):
     
     def __len__(self):
         return len(self.img_files)
+    
+    
+class DetectImgDatasets(Dataset):
+    def __init__(self, img_folder, img_size=416):
+        # 获取文件夹下所有的图片路径
+        self.img_files = glob.glob(f"{img_folder}/*.*")
+        self.img_shape = (img_size, img_size)
+        
+    def __getitem__(self, index):
+        img_path = self.img_files[index % len(self.img_files)]
+        img = np.array(Image.open(img_path))
+        
+        h, w, _ = img.shape
+        diff = np.abs(h, w)
+        pad1, pad2 = diff // 2, diff - diff // 2
+        pad = ((pad1, pad2), (0, 0), (0, 0)) if h <= w else ((0, 0), (pad1, pad2), (0, 0))
+        input_img = np.pad(img, pad, mode="constant", constant_values=127.5) / 225
+        
+        input_img = resize(input_img, (*self.img_shape, 3), mode="reflect")
+        input_img = np.transpose(input_img, (2, 0, 1))
+        
+        input_img = torch.from_numpy(input_img).float()
+        return img_path, input_img
+    
+    def __len__(self):
+        return len(self.img_files)
+        
