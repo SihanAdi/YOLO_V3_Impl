@@ -63,7 +63,7 @@ class CocoDatasets(Dataset):
         """label"""
         label_path = self.label_files[index % len(self.img_files)].strip()
         
-        labels = None
+        labels = filled_labels = None
         if os.path.exists(label_path):
             labels = np.loadtxt(label_path).reshape(-1, 5)
             
@@ -106,7 +106,7 @@ class DetectImgDatasets(Dataset):
         img = np.array(Image.open(img_path))
         
         h, w, _ = img.shape
-        diff = np.abs(h, w)
+        diff = np.abs(h - w)
         pad1, pad2 = diff // 2, diff - diff // 2
         pad = ((pad1, pad2), (0, 0), (0, 0)) if h <= w else ((0, 0), (pad1, pad2), (0, 0))
         input_img = np.pad(img, pad, mode="constant", constant_values=127.5) / 225
