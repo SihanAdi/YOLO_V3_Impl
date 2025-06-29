@@ -2,10 +2,16 @@
 YOLO模型架构
 """
 
+from collections import defaultdict
 import torch.nn as nn
 import torch
+import numpy as np
 from .utils.parse_config import parse_model_config
 from .utils.utils import build_targets
+import logging
+
+# 配置基础日志
+logging.basicConfig(level=logging.DEBUG)
 
 def create_modules(module_defs):
     if module_defs[0]["type"] == "net":
@@ -250,3 +256,54 @@ class YOLOLayer(nn.Module):
             )
             return output
             
+            
+class Darknet(nn.Module):
+    def __init__(self, config_path, img_size=416):
+        super().__init__()
+        self.module_defs = parse_model_config(config_path)
+        self.hyperparams, self.module_list = create_modules(self.module_defs)
+        self.img_size = img_size
+        self.seen = 0
+        self.header_info = np.array([0,0,0,self.seen,0])
+        self.loss_names = ["x", "y", "w", "h", "conf", "cls", "recall", "precision"]
+    
+    def forward(self, x, targets=None):
+        is_training = targets is not None
+        output = []
+        self.losses = defaultdict(float)
+        layer_outputs = []
+        
+        logging.info(f"input size: {x.shape}")
+        
+        for i, (module_def, module) in enumerate(zip(self.module_defs, self.module_list)):
+            if module_def["type"] in ["convolutional", "upsample", "maxpool"]:
+                x = module(x)
+            elif module_def["type"] == "route":
+                layers = [int(layer.strip()) for layer in module_def["layers"].split(",")]
+                # x的shape为:[N,C,W,H], 因此, dim=1代表在深度维度上进行连接
+                x = torch.cat(
+                    [layer_outputs[layer] for layer in layers], dim=1
+                )
+            elif module_def["type"] == "shortcut":
+                # route相当于短路(不在乎前一层的输出),shortcut相当于res模块(需要加上前一层的输出)
+                layer_idx = int(module_def["from"])
+                x = layer_outputs[-1] + layer_outputs[layer_idx]
+            elif module_def["type"] == "yolo":
+                if is_training:
+                    # 因为 module 是 nn.Sequential	它的 forward 只接受单输入，不能额外传 targets
+                    x, *losses = module[0](x, targets) # 直接执行 YOLOLayer.forward(x, targets)，支持多输入
+                    for name, loss in zip(self.loss_names, losses): #将losses根据名字加入字典
+                        self.losses[name] += loss
+                else:
+                    x = module(x)
+                    
+                # 记录yolo层的预测结果
+                output.append(x)
+                
+            layer_outputs.append(x)
+        
+        # YOLOv3 是典型的3维度检测器    
+        self.losses["recall"] /= 3
+        self.losses["precision"] /= 3
+
+        return sum(output) if is_training else torch.cat(output, 1)
