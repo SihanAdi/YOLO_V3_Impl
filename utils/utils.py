@@ -1,6 +1,11 @@
 import torch.nn as nn
 import torch
 
+def load_classes(path):
+    with open(path, "r") as f:
+        names = [line.strip() for line in f.readlines()]
+    return names
+
 def weights_init_normal(model_layer):
     classname = model_layer.__class__.__name__
     if classname.find("Conv") != -1:

@@ -19,7 +19,20 @@ def parse_model_config(file_path):
                 key, value = line.split("=")
                 model_defs[-1][key.strip()] = value.strip()
         return model_defs
-
-
+    
+def parse_data_config(file_path):
+    options = {}
+    options['gpus'] = '0,1,2,3'
+    options['num_workers'] = '10'
+    with open(file_path, "r") as f:
+        for line in f.readlines():
+            items = line.split("=")
+            if len(items) != 2:
+                continue
+            key, value = items[0].strip(), items[1].strip()
+            options[key] = value
+    return options
+            
+            
 if __name__ == "__main__":
     print(parse_model_config('/Users/adisihansun/Desktop/YOLO_impl/YOLO_V3_Impl/config/yolov3.cfg'))
