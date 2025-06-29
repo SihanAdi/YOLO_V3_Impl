@@ -177,6 +177,76 @@ class YOLOLayer(nn.Module):
             self.mse_loss = self.mse_loss.to(device)
             self.bce_loss = self.bce_loss.to(device)
             self.ce_loss = self.ce_loss.to(device)
+            
+            nGT, nCorrect, mask, conf_mask, tx, ty, tw, th, tconf, tcls = build_targets(
+                pred_boxes=pred_boxes.to('cpu').detach(),
+                pred_conf=pred_conf.to('cpu').detach(),
+                pred_cls=pred_cls.to('cpu').detach(),
+                target=targets.to('cpu').detach(),
+                anchors=scaled_anchors.to('cpu').detach(),
+                num_anchors=nA,
+                num_classes=self.num_classes,
+                grid_size=nG,
+                ignore_thres=self.ignore_thresh,
+                img_dim=self.img_dim
+            )
+            
+            num_proposals = int((pred_conf > 0.5).sum().item())
+            recall = float(nCorrect / nGT) if nGT else 1
+            precision = float(nCorrect / num_proposals)
+            
+            mask = mask.to(dtype=torch.bool, device=device)
+            conf_mask = conf_mask.to(dtype=torch.bool, device=device)
+            tx = tx.to(dtype=torch.float32, device=device)
+            ty = ty.to(dtype=torch.float32, device=device)
+            tw = tw.to(dtype=torch.float32, device=device)
+            th = th.to(dtype=torch.float32, device=device)
+            tconf = tconf.to(dtype=torch.float32, device=device)
+            tcls = tcls.to(dtype=torch.long, device=device)
+            
+            conf_mask_true = mask # mask 只有best_n对应位为1, 其余都为0, 具有最佳匹配度的anchor box
+            conf_mask_false = conf_mask - mask # conf_mask中iou大于ignore_thres的为0, 其余为1, best_n也为1, iou小于0.5的anchor box
+            
+            """计算loss"""
+            # 忽略 non-existing objects, 计算相应的位置 loss
+            loss_x = self.mse_loss(x[mask], tx[mask])
+            loss_y = self.mse_loss(y[mask], ty[mask])
+            loss_w = self.mse_loss(w[mask], tw[mask])
+            loss_h = self.mse_loss(h[mask], th[mask])
+            
+            # 计算置信度 loss
+            loss_conf = self.bce_loss(
+                pred_conf[conf_mask_true], tconf[conf_mask_true]
+            ) + self.bce_loss(
+                pred_conf[conf_mask_false], tconf[conf_mask_false]
+            )
+            
+            # 计算分类 loss
+            loss_cls = (1 / nB) * self.ce_loss(pred_cls[conf_mask_true], torch.argmax(tcls[conf_mask_true], 1))
+            
+            loss = loss_x + loss_y + loss_w + loss_h + loss_conf + loss_cls
+            
+            return (
+                loss,
+                loss_x.item(),
+                loss_y.item(),
+                loss_w.item(),
+                loss_h.item(),
+                loss_conf.item(),
+                loss_cls.item(),
+                recall,
+                precision,
+            )
         else:
-            # 非训练阶段
-            pass
+            # 非训练阶段则直接返回准确率, output的shape为: [nB, -1, 85]
+            output = torch.cat(
+                (
+                    pred_boxes.view(nB, -1, 4) * stride,
+                    pred_conf.view(nB, -1, 1),
+                    pred_cls.view(nB, -1, self.num_classes)
+                 
+                ),
+                -1
+            )
+            return output
+            
