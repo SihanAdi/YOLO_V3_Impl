@@ -3,7 +3,9 @@ YOLO模型架构
 """
 
 import torch.nn as nn
+import torch
 from .utils.parse_config import parse_model_config
+from .utils.utils import build_targets
 
 def create_modules(module_defs):
     if module_defs[0]["type"] == "net":
@@ -122,4 +124,59 @@ class EmptyLayer(nn.Module):
 
 class YOLOLayer(nn.Module):
     def __init__(self, anchors, num_classes, img_dim) -> None:
-        super().__init__()
+        self.anchors = anchors
+        self.num_anchors = len(anchors)
+        self.num_classes = num_classes
+        self.img_dim = img_dim
+        self.num_bbox_attrs = 5 + num_classes
+        self.ignore_thresh = 0.5
+        self.lambda_coord = 1
+        
+        # 定义损失
+        self.mse_loss = nn.MSELoss(size_average=True) # 计算边界框坐标(x,y,w,h)的损失, 对损失取平均
+        self.bce_loss = nn.BCELoss(size_average=True) # 计算目标置信度(confidence score)的损失, 对损失取平均
+        self.ce_loss = nn.CrossEntropyLoss() # 计算类别分类的损失
+        
+    def forward(self, x, targets=None):
+        # x: (batch, anchors * (5 + num_classes), w, h)
+        nB = x.shape[0]
+        nG = x.shape[2]
+        nA = self.num_anchors
+        stride = self.img_dim / nG
+        device = x.device
+        prediction = x.view(nB, nA, self.num_bbox_attrs, nG, nG).permute(0, 1, 3, 4, 2).contiguous()
+        
+        # 由于预测相对偏移量
+        x = torch.sigmoid(prediction[..., 0])
+        y = torch.sigmoid(prediction[..., 1])
+        w = prediction[..., 2]
+        h = prediction[..., 3]
+        pred_conf = torch.sigmoid(prediction[..., 4])
+        pred_cls = torch.sigmoid(prediction[..., 5:])
+        
+        # 确定每个网格的基准坐标
+        grid_x = torch.arange(nG, dtype=torch.float32, device=device).repeat(nG, 1).view([1, 1, nG, nG])
+        grid_y = torch.arange(nG, dtype=torch.float32, device=device).repeat(nG, 1).view([1, 1, nG, nG])
+        
+        # 将原图上 anchors 的 box 大小根据当前特征图谱的大小转换成相应的特征图谱上的 box
+        scaled_anchors = torch.tensor(data=[
+            (a_w / stride, a_h / stride) for a_w, a_h in self.anchors
+        ], dtype=torch.float32, device=device)
+        
+        anchor_w = scaled_anchors[:, 0:1].view([1, nA, 1, 1])
+        anchor_h = scaled_anchors[:, 1:2].view([1, nA, 1, 1])
+        
+        pred_boxes = torch.zeros(prediction[..., :4].shape, dtype=torch.float32, device=device)
+        pred_boxes[..., 0] = x.detach() + grid_x
+        pred_boxes[..., 1] = y.detach() + grid_y
+        pred_boxes[..., 2] = torch.exp(w.detach()) * anchor_w
+        pred_boxes[..., 3] = torch.exp(h.detach()) * anchor_h
+        
+        if targets:
+            # 训练阶段
+            self.mse_loss = self.mse_loss.to(device)
+            self.bce_loss = self.bce_loss.to(device)
+            self.ce_loss = self.ce_loss.to(device)
+        else:
+            # 非训练阶段
+            pass
